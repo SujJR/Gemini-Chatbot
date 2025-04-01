@@ -15,7 +15,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
-    --foreground: #ededed;
+    --foreground: #0e0101;
   }
 }
 
@@ -59,10 +59,10 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(156, 163, 175, 0.5);
+  background-color: rgba(2, 11, 27, 0.5);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(156, 163, 175, 0.8);
+  background-color: rgba(0, 4, 10, 0.8);
 }
