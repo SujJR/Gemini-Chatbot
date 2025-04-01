@@ -21,7 +21,7 @@ class WeaviateVectorStore:
 
 # Best practice: store your credentials in environment variables
             weaviate_url = "https://j2nw1vfottyzfm4kjp38za.c0.asia-southeast1.gcp.weaviate.cloud"
-            weaviate_api_key = "BGrA6MxDawu3vbuxJUdq6VFie7cxDnZgzVHc"
+            weaviate_api_key = "WEAVIATE_API_KEY"
             
             # Or use environment variables (recommended for production)
             # weaviate_url = os.environ.get("WEAVIATE_URL")
