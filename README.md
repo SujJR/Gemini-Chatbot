@@ -1,6 +1,6 @@
 This a simple PoC of a chatbot using Gemini.
 
-Please add your Gemini API key in the .env file in the backend folder.
+Please add your Gemini API key and weaviate API key in the .env file in the backend folder.
 
 To run the frontend:
 ```
