@@ -1,6 +1,6 @@
-This a simple PoC of a chatbot using Gemini.
+This a PoC of a RAG chatbot using Gemini.
 
-Please add your Gemini API key and weaviate API key in the .env file in the backend folder.
+Please add your Gemini API key, weaviate API key, Postgres host, user, db_name and password, Mongo use, password and cluster name, and Milvis URL, User and password in the .env file in the backend folder.
 
 To run the frontend:
 ```
