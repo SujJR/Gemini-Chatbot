@@ -12,7 +12,9 @@ faiss-cpu==1.7.4
 chromadb==0.4.22
 weaviate-client==3.25.2
 tqdm==4.66.1
+pymongo==4.5.0
 psycopg2-binary==2.9.9
+pymilvus==2.2.12
 pgvector==0.2.3
 sqlalchemy==2.0.27
 chromadb

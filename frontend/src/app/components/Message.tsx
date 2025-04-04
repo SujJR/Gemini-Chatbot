@@ -8,17 +8,17 @@ interface MessageProps {
 
 const Message: React.FC<MessageProps> = ({ message }) => {
   return (
-    <div className={`message ${message.sender === 'user' ? 'flex justify-end' : 'flex justify-start'} mb-4`}>
+    <div className={`message ${message.sender === 'user' ? 'flex justify-end' : 'flex justify-start'} mb-4 w-full`}>
       <div 
-        className={`max-w-[70%] px-4 py-3 rounded-2xl ${
+        className={`max-w-[85%] px-4 py-3 rounded-2xl ${
           message.sender === 'user' 
             ? 'bg-blue-600 text-white rounded-br-none' 
             : 'bg-gray-200 text-gray-800 rounded-bl-none'
         }`}
       >
         {message.sender === 'bot' ? (
-          <div className="prose dark:prose-invert prose-sm">
-            <ReactMarkdown>
+          <div className="prose-sm max-w-full">
+            <ReactMarkdown >
               {message.text}
             </ReactMarkdown>
           </div>

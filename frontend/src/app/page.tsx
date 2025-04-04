@@ -7,12 +7,14 @@ import Message from './components/Message';
 import DocumentUpload from './components/DocumentUpload';
 import ChatInput from './components/ChatInput';
 import RagResults from './components/RagResults';
+import RagQueryForm from './components/RagQueryForm';
 
 export default function Home() {
   // Chat-related states
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [availableDatabases, setAvailableDatabases] = useState<DatabaseType[]>(['faiss', 'chroma']);
 
   // RAG-related states
   const [uploadStatus, setUploadStatus] = useState<UploadResponse | null>(null);
@@ -22,7 +24,10 @@ export default function Home() {
   const [ragResponses, setRagResponses] = useState<Record<DatabaseType, RagResponse | null>>({
     faiss: null,
     chroma: null,
-    weaviate: null
+    weaviate: null,
+    mongo: null,
+    pgvector: null,
+    milvus: null
   });
   const [comparisonResult, setComparisonResult] = useState<ComparisonResult | null>(null);
   const [isQuerying, setIsQuerying] = useState(false);
@@ -35,6 +40,27 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const fetchAvailableDatabases = async () => {
+    try {
+      const response = await axios.get('http://localhost:5000/api/available-dbs');
+      if (response.data.success) {
+        const availableDBs = response.data.available_databases;
+        setAvailableDatabases(availableDBs);
+        
+        // Set active database to the first available one if current is not available
+        if (availableDBs.length > 0 && !availableDBs.includes(activeDatabase)) {
+          setActiveDatabase(availableDBs[0]);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching available databases:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchAvailableDatabases();
+  }, []);
+  
   const handleSendMessage = async (messageText: string) => {
     // Add user message to chat
     const userMessage: MessageType = { text: messageText, sender: 'user' };
@@ -79,21 +105,38 @@ export default function Home() {
     
     // Find fastest database
     const times = response.document.indexing_times;
-    const fastest = Object.entries(times).reduce(
-      (fastest, [db, time]) => time < fastest.time ? {db, time} : fastest,
-      { db: 'none', time: Infinity }
-    );
+    const availableDbs = Object.keys(times).filter(db => times[db as keyof typeof times] >= 0) as DatabaseType[];
+    
+    const fastest = Object.entries(times)
+      .filter(([_, time]) => time >= 0)
+      .reduce(
+        (fastest, [db, time]) => time < fastest.time ? {db, time} : fastest,
+        { db: 'none', time: Infinity }
+      );
+    
+    // Update available databases based on upload response
+    if (response.document.available_dbs) {
+      const newAvailableDbs = Object.entries(response.document.available_dbs)
+        .filter(([_, isAvailable]) => isAvailable)
+        .map(([db]) => db as DatabaseType);
+      
+      setAvailableDatabases(newAvailableDbs);
+    }
+    
+    // Generate indexing time message
+    const indexingTimesMessage = availableDbs
+      .map(db => `- ${db.toUpperCase()}: ${times[db].toFixed(4)}s`)
+      .join('\n');
     
     setMessages(prev => [
       ...prev,
       {
         text: `Successfully uploaded document: ${response.document.filename}. 
-        The document has been indexed in all three vector databases.
+        The document has been indexed in all available vector databases.
         
         Indexing times:
-        - FAISS: ${times.faiss.toFixed(4)}s
-        - ChromaDB: ${times.chroma.toFixed(4)}s
-        - Weaviate: ${times.weaviate.toFixed(4)}s
+        
+        ${indexingTimesMessage}
         
         Fastest database: ${fastest.db.toUpperCase()} (${fastest.time.toFixed(4)}s)
         
@@ -104,45 +147,126 @@ export default function Home() {
   };
 
   // Handle RAG query submission for a single database
-  const handleRagQuery = async (query: string, dbType: DatabaseType) => {
+  const handleRagQuery = async (query: string, dbType: DatabaseType, compareAll: boolean = false) => {
     setIsQuerying(true);
     setCurrentQuery(query);
     
-    // Add query to message history
+    // Add query to message history with appropriate text based on compareAll
     setMessages(prev => [
       ...prev,
       {
-        text: `Query using ${dbType.toUpperCase()}: ${query}`,
+        text: compareAll 
+          ? `Comparing all databases for query: ${query}` 
+          : `Query using ${dbType.toUpperCase()}: ${query}`,
         sender: 'user'
       }
     ]);
 
     try {
+      // Use the compare_all parameter in the API request
       const response = await axios.post<RagResponse>('http://localhost:5000/api/rag', {
         query,
-        db_type: dbType
+        db_type: dbType,
+        compare_all: compareAll
       });
 
       if (response.data.success) {
-        // Update responses state
-        setRagResponses(prev => ({
-          ...prev,
-          [dbType]: response.data
-        }));
-        
-        // Add response to chat
-        setMessages(prev => [
-          ...prev,
-          {
-            text: `${dbType.toUpperCase()} (${response.data.query_time.toFixed(4)}s): ${response.data.rag_response}`,
-            sender: 'bot'
+        if (compareAll && response.data.compare_all) {
+          // Handle comparison results
+          const results = response.data.results;
+          const bestDb = response.data.best_db;
+          
+          if (!results) {
+            setMessages(prev => [
+              ...prev,
+              {
+                text: `No results found in any database.`,
+                sender: 'bot'
+              }
+            ]);
+            return;
           }
-        ]);
+          
+          // Format performance comparison message
+          let dbComparison = "Database Comparison Results:\n";
+          
+          // Track fastest DB for display
+          let fastestDb: string | null = null;
+          let fastestTime = Infinity;
+          
+          // First pass: Find the fastest database
+          Object.entries(results).forEach(([db, result]) => {
+            if (result.query_time && result.retrieved_docs && result.retrieved_docs.length > 0) {
+              if (result.query_time < fastestTime) {
+                fastestTime = result.query_time;
+                fastestDb = db;
+              }
+            }
+          });
+          
+          // Second pass: Format the results with clear indication of fastest
+          Object.entries(results).forEach(([db, result]) => {
+            if (result.query_time) {
+              const isFastest = db === fastestDb;
+              dbComparison += `- ${db.toUpperCase()}: ${result.query_time.toFixed(4)}s (${result.retrieved_docs?.length || 0} results)${isFastest ? ' ⚡ FASTEST' : ''}\n`;
+            } else if (result.error) {
+              dbComparison += `- ${db.toUpperCase()}: Error: ${result.error}\n`;
+            }
+          });
+          
+          // Add summary of fastest database
+          if (fastestDb) {
+            const fastestResult = results[fastestDb];
+            if (fastestResult && fastestResult.query_time) {
+              const time = fastestResult.query_time.toFixed(4);
+              dbComparison += `\nFastest database: ${String(fastestDb).toUpperCase()} (${time}s)\n\n`;
+            }
+          } else if (bestDb && typeof bestDb === 'string') {
+            dbComparison += `\nBest database: ${bestDb.toUpperCase()}\n\n`; 
+          } else {
+            dbComparison += `\nNo database returned results fast enough\n\n`;
+          }
+          
+          dbComparison += `RAG Response:\n${response.data.rag_response}`;
+          
+          // Add comparison results to messages
+          setMessages(prev => [
+            ...prev,
+            {
+              text: dbComparison,
+              sender: 'bot'
+            }
+          ]);
+          
+          // Update state with comparison result
+          if (bestDb) {
+            setComparisonResult({
+              query,
+              responses: results as unknown as Record<DatabaseType, RagResponse>,
+              fastest: bestDb as DatabaseType
+            });
+          }
+        } else {
+          // Handle single database response (original behavior)
+          setRagResponses(prev => ({
+            ...prev,
+            [dbType]: response.data
+          }));
+          
+          // Add response to chat
+          setMessages(prev => [
+            ...prev,
+            {
+              text: `${dbType.toUpperCase()} (${response.data.query_time.toFixed(4)}s): ${response.data.rag_response}`,
+              sender: 'bot'
+            }
+          ]);
+        }
       } else {
         setMessages(prev => [
           ...prev,
           {
-            text: `Error querying ${dbType.toUpperCase()}: ${response.data.message || 'Unknown error'}`,
+            text: `Error querying ${compareAll ? 'databases' : dbType.toUpperCase()}: ${response.data.message || 'Unknown error'}`,
             sender: 'bot'
           }
         ]);
@@ -152,97 +276,7 @@ export default function Home() {
       setMessages(prev => [
         ...prev,
         {
-          text: `Error querying ${dbType.toUpperCase()}: Request failed`,
-          sender: 'bot'
-        }
-      ]);
-    } finally {
-      setIsQuerying(false);
-    }
-  };
-  
-  // Comparison handler for running the same query against all databases
-  const handleCompareAllDatabases = async (query: string) => {
-    setIsQuerying(true);
-    setCurrentQuery(query);
-    setComparisonResult(null);
-    
-    // Add query to message history
-    setMessages(prev => [
-      ...prev,
-      {
-        text: `Comparing all databases for query: ${query}`,
-        sender: 'user'
-      }
-    ]);
-    
-    const allResponses: Record<DatabaseType, RagResponse> = {} as Record<DatabaseType, RagResponse>;
-    const databases: DatabaseType[] = ['faiss', 'chroma', 'weaviate'];
-    
-    try {
-      // Run queries in parallel against all databases
-      const results = await Promise.all(
-        databases.map(db => 
-          axios.post<RagResponse>('http://localhost:5000/api/rag', { query, db_type: db })
-        )
-      );
-      
-      // Process results
-      results.forEach((response, index) => {
-        if (response.data.success) {
-          const dbType = databases[index] as DatabaseType;
-          allResponses[dbType] = response.data;
-        }
-      });
-      
-      // Find fastest database
-      let fastest: DatabaseType = 'faiss';
-      let fastestTime = Infinity;
-      
-      for (const [db, response] of Object.entries(allResponses)) {
-        if (response.query_time < fastestTime) {
-          fastest = db as DatabaseType;
-          fastestTime = response.query_time;
-        }
-      }
-      
-      // Set comparison result
-      setComparisonResult({
-        query,
-        responses: allResponses,
-        fastest
-      });
-      
-      // Add summary message to chat
-      const comparisonMessage = `
-Database Comparison Results:
-${databases.map(db => 
-  `- ${db.toUpperCase()}: ${allResponses[db]?.query_time.toFixed(4)}s`
-).join('\n')}
-
-Fastest database: ${fastest.toUpperCase()} (${allResponses[fastest]?.query_time.toFixed(4)}s)
-
-Response from fastest database (${fastest.toUpperCase()}):
-${allResponses[fastest]?.rag_response}
-      `;
-      
-      setMessages(prev => [
-        ...prev,
-        {
-          text: comparisonMessage,
-          sender: 'bot'
-        }
-      ]);
-      
-      // Update individual responses state
-      setRagResponses(allResponses);
-      
-    } catch (error) {
-      console.error('Comparison error:', error);
-      setMessages(prev => [
-        ...prev,
-        {
-          text: 'Error comparing databases. Please try again.',
+          text: `Error querying ${compareAll ? 'databases' : dbType.toUpperCase()}: Request failed`,
           sender: 'bot'
         }
       ]);
@@ -307,57 +341,15 @@ ${allResponses[fastest]?.rag_response}
               />
             ) : (
               <div className="space-y-4">
-                <ChatInput 
-                  onSendMessage={(query) => handleRagQuery(query, activeDatabase)}
-                  isLoading={isQuerying}
-                  placeholder={`Ask a question about the document using ${activeDatabase.toUpperCase()}...`}
-                  buttonText={`Query with ${activeDatabase.toUpperCase()}`}
+                <RagQueryForm
+                  onQueryComplete={(response) => {
+                    // This is now handled directly in handleRagQuery
+                  }}
+                  isQuerying={isQuerying}
+                  setIsQuerying={setIsQuerying}
+                  availableDatabases={availableDatabases}
+                  onSubmitQuery={(query, dbType, doCompareAll) => handleRagQuery(query, dbType, doCompareAll)}
                 />
-                
-                <div className="flex space-x-2 mt-2">
-                  <button
-                    onClick={() => setActiveDatabase('faiss')}
-                    className={`px-3 py-2 text-sm rounded-md flex-1 ${
-                      activeDatabase === 'faiss' 
-                        ? 'bg-blue-100 text-blue-800 border border-blue-300' 
-                        : 'bg-gray-100 text-gray-700'
-                    }`}
-                    disabled={isQuerying}
-                  >
-                    FAISS
-                  </button>
-                  <button
-                    onClick={() => setActiveDatabase('chroma')}
-                    className={`px-3 py-2 text-sm rounded-md flex-1 ${
-                      activeDatabase === 'chroma' 
-                        ? 'bg-blue-100 text-blue-800 border border-blue-300' 
-                        : 'bg-gray-100 text-gray-700'
-                    }`}
-                    disabled={isQuerying}
-                  >
-                    ChromaDB
-                  </button>
-                  <button
-                    onClick={() => setActiveDatabase('weaviate')}
-                    className={`px-3 py-2 text-sm rounded-md flex-1 ${
-                      activeDatabase === 'weaviate' 
-                        ? 'bg-blue-100 text-blue-800 border border-blue-300' 
-                        : 'bg-gray-100 text-gray-700'
-                    }`}
-                    disabled={isQuerying}
-                  >
-                    Weaviate
-                  </button>
-                </div>
-                
-                <div className="mt-2">
-                  <button
-                    onClick={() => currentQuery && handleCompareAllDatabases(currentQuery)}
-                    className="w-full px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:opacity-50"
-                  >
-                    Compare All Databases
-                  </button>
-                </div>
               </div>
             )}
           </div>
@@ -371,6 +363,7 @@ ${allResponses[fastest]?.rag_response}
             onUploadComplete={handleUploadComplete} 
             isUploading={isUploading}
             setIsUploading={setIsUploading}
+            setAvailableDatabases={setAvailableDatabases}
           />
           
           {uploadStatus && (
@@ -385,12 +378,25 @@ ${allResponses[fastest]?.rag_response}
               
               <div className="mt-4">
                 <h3 className="font-medium text-gray-700 mb-2">Indexing Performance</h3>
-                {Object.entries(uploadStatus.document.indexing_times).map(([db, time]) => (
-                  <div key={db} className="flex justify-between items-center py-1">
-                    <span className="font-medium capitalize">{db}</span>
-                    <span className="text-gray-700">{time.toFixed(4)}s</span>
-                  </div>
-                ))}
+                <div className="overflow-hidden bg-white rounded-md border border-gray-200">
+                  {Object.entries(uploadStatus.document.indexing_times)
+                    .filter(([_, time]) => time >= 0)
+                    .sort(([_, timeA], [__, timeB]) => timeA - timeB)
+                    .map(([db, time], index, arr) => (
+                      <div 
+                        key={db} 
+                        className={`flex justify-between items-center px-3 py-2 ${
+                          index < arr.length - 1 ? 'border-b border-gray-100' : ''
+                        } ${index === 0 ? 'font-medium text-green-600' : ''}`}
+                      >
+                        <span className="capitalize">
+                          {index === 0 && '🏆 '}
+                          {db}
+                        </span>
+                        <span>{time.toFixed(4)}s</span>
+                      </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -398,17 +404,24 @@ ${allResponses[fastest]?.rag_response}
           {comparisonResult && (
             <div className="mt-6">
               <h3 className="font-medium text-gray-700 mb-2">Query Performance</h3>
-              {Object.entries(comparisonResult.responses).map(([db, response]) => (
-                <div key={db} className={`flex justify-between items-center py-1 ${
-                  db === comparisonResult.fastest ? 'font-medium text-green-600' : ''
-                }`}>
-                  <span className="capitalize">
-                    {db === comparisonResult.fastest && '🏆 '}
-                    {db}
-                  </span>
-                  <span>{response.query_time.toFixed(4)}s</span>
-                </div>
-              ))}
+              <div className="overflow-hidden bg-white rounded-md border border-gray-200">
+                {Object.entries(comparisonResult.responses)
+                  .sort(([_, respA], [__, respB]) => respA.query_time - respB.query_time)
+                  .map(([db, response], index) => (
+                    <div 
+                      key={db} 
+                      className={`flex justify-between items-center px-3 py-2 ${
+                        index < Object.keys(comparisonResult.responses).length - 1 ? 'border-b border-gray-100' : ''
+                      } ${db === comparisonResult.fastest ? 'font-medium text-green-600' : ''}`}
+                    >
+                      <span className="capitalize">
+                        {db === comparisonResult.fastest && '🏆 '}
+                        {db}
+                      </span>
+                      <span>{response.query_time.toFixed(4)}s</span>
+                    </div>
+                ))}
+              </div>
             </div>
           )}
           

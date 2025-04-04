@@ -1,20 +1,23 @@
 import { useState } from 'react';
 import axios from 'axios';
-import { UploadResponse } from '../types';
+import { UploadResponse, DatabaseType } from '../types';
 
 interface DocumentUploadProps {
   onUploadComplete: (response: UploadResponse) => void;
   isUploading: boolean;
   setIsUploading: (isUploading: boolean) => void;
+  setAvailableDatabases?: (databases: DatabaseType[]) => void; // New prop to update available DBs in parent
 }
 
 const DocumentUpload: React.FC<DocumentUploadProps> = ({ 
   onUploadComplete, 
   isUploading, 
-  setIsUploading 
+  setIsUploading,
+  setAvailableDatabases
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<UploadResponse | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -25,6 +28,8 @@ const DocumentUpload: React.FC<DocumentUploadProps> = ({
       } else {
         setSelectedFile(file);
         setError(null);
+        // Reset upload status when a new file is selected
+        setUploadStatus(null);
       }
     }
   };
@@ -37,6 +42,7 @@ const DocumentUpload: React.FC<DocumentUploadProps> = ({
 
     setIsUploading(true);
     setError(null);
+    setUploadStatus(null);
 
     const formData = new FormData();
     formData.append('file', selectedFile);
@@ -51,7 +57,19 @@ const DocumentUpload: React.FC<DocumentUploadProps> = ({
       );
 
       if (response.data.success) {
+        setUploadStatus(response.data);
         onUploadComplete(response.data);
+        
+        // Update available databases in parent component if function provided
+        if (setAvailableDatabases && response.data.document.available_dbs) {
+          const availableDbs: DatabaseType[] = [];
+          Object.entries(response.data.document.available_dbs).forEach(([db, isAvailable]) => {
+            if (isAvailable) {
+              availableDbs.push(db as DatabaseType);
+            }
+          });
+          setAvailableDatabases(availableDbs);
+        }
       } else {
         setError(response.data.message || 'Upload failed');
       }
@@ -61,6 +79,71 @@ const DocumentUpload: React.FC<DocumentUploadProps> = ({
     } finally {
       setIsUploading(false);
     }
+  };
+
+  // Render database availability status
+  const renderDatabaseStatus = () => {
+    if (!uploadStatus) return null;
+    
+    const availableDbs = uploadStatus.document.available_dbs;
+    if (!availableDbs) return null;
+    
+    const allDatabases: DatabaseType[] = ['faiss', 'chroma', 'weaviate', 'mongo', 'pgvector', 'milvus'];
+    
+    return (
+      <div className="mt-4 text-sm">
+        <h4 className="font-medium mb-2">Available Vector Databases:</h4>
+        <div className="grid grid-cols-2 gap-2">
+          {allDatabases.map(db => (
+            <div 
+              key={db}
+              className={`px-3 py-2 rounded-md flex items-center ${
+                availableDbs[db] 
+                  ? 'bg-green-50 text-green-700 border border-green-200' 
+                  : 'bg-gray-50 text-gray-400 border border-gray-200'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full mr-2 ${availableDbs[db] ? 'bg-green-500' : 'bg-gray-400'}`}></span>
+              <span className="capitalize">{db}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // Render indexing performance after upload
+  const renderIndexingPerformance = () => {
+    if (!uploadStatus) return null;
+    
+    const { indexing_times } = uploadStatus.document;
+    
+    // Only show databases that were successfully indexed
+    const availableDatabases = Object.entries(indexing_times)
+      .filter(([_, time]) => time >= 0)
+      .sort(([_, timeA], [__, timeB]) => timeA - timeB);
+    
+    if (availableDatabases.length === 0) return null;
+    
+    return (
+      <div className="mt-4">
+        <h4 className="font-medium mb-2 text-sm">Indexing Performance:</h4>
+        <div className="overflow-hidden bg-white rounded-md border border-gray-200">
+          {availableDatabases.map(([db, time]) => (
+            <div 
+              key={db}
+              className="flex justify-between px-3 py-2 border-b last:border-b-0 text-sm"
+            >
+              <span className="font-medium capitalize">{db}</span>
+              <span className="text-gray-600">{time.toFixed(3)}s</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 text-xs text-gray-500">
+          Fastest: {availableDatabases[0][0].toUpperCase()} ({availableDatabases[0][1].toFixed(3)}s)
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -112,6 +195,24 @@ const DocumentUpload: React.FC<DocumentUploadProps> = ({
           'Upload & Process'
         )}
       </button>
+      
+      {uploadStatus && uploadStatus.success && (
+        <div className="mt-4 pt-4 border-t">
+          <div className="text-green-600 font-medium mb-2">
+            Document uploaded and processed successfully!
+          </div>
+          <div className="text-sm text-gray-700">
+            <div>Filename: <span className="font-medium">{uploadStatus.document.filename}</span></div>
+            <div>Chunks: <span className="font-medium">{uploadStatus.document.chunk_count}</span></div>
+          </div>
+          
+          {/* Show database availability */}
+          {renderDatabaseStatus()}
+          
+          {/* Show indexing performance */}
+          {renderIndexingPerformance()}
+        </div>
+      )}
     </div>
   );
 };

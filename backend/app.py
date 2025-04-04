@@ -11,6 +11,9 @@ from rag.faiss_store import FAISSVectorStore
 from rag.chroma_store import ChromaVectorStore
 from rag.utils import save_uploaded_file, format_results
 from langchain_google_genai import GoogleGenerativeAIEmbeddings  # Changed from OpenAI to Google
+from rag.mongo_store import MongoVectorStore
+from rag.pgvector_store import PGVectorStore
+from rag.milvus_store import MilvusVectorStore
 
 # Load environment variables
 load_dotenv()
@@ -23,7 +26,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # Initialize the model for chat
-model = genai.GenerativeModel('gemini-1.5-pro')
+model = genai.GenerativeModel('gemini-1.5-flash')
 chat_session = model.start_chat(history=[])
 
 # Initialize embedding model with Gemini instead of OpenAI
@@ -47,6 +50,27 @@ try:
 except ImportError as e:
     print(f"Weaviate import failed: {e}")
     print("The application will run without Weaviate support")
+
+mongo_store = MongoVectorStore(embedding_model)
+pgvector_store = PGVectorStore(embedding_model)
+# Add this in app.py where you initialize the stores
+# Initialize Milvus vector store with proper error handling
+milvus_available = False
+milvus_store = None
+try:
+    from rag.milvus_store import MilvusVectorStore
+    print("Attempting to initialize Milvus...")
+    milvus_store = MilvusVectorStore(embedding_model)
+    
+    # Check if initialization was successful
+    if milvus_store.initialized:
+        milvus_available = True
+        print("✅ Milvus successfully initialized")
+    else:
+        print("❌ Milvus initialization failed - running without Milvus")
+except Exception as e:
+    print(f"❌ Milvus import error: {str(e)}")
+    print("The application will run without Milvus support")
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -98,23 +122,57 @@ def upload():
         if not document_chunks or len(document_chunks) == 0:
             return jsonify({"success": False, "message": "Failed to process document into chunks"})
             
+        # Initialize timing dictionary
+        indexing_times = {
+            "faiss": 0,
+            "chroma": 0,
+            "weaviate": -1,
+            "mongo": -1,
+            "pgvector": -1,
+            "milvus": -1
+        }
+        
         # Time how long it takes to add documents to each vector store
         # FAISS
         start_time = time.time()
         faiss_store.add_documents(document_chunks)
-        faiss_time = time.time() - start_time
+        indexing_times["faiss"] = time.time() - start_time
         
         # ChromaDB
         start_time = time.time()
         chroma_store.add_documents(document_chunks)
-        chroma_time = time.time() - start_time
+        indexing_times["chroma"] = time.time() - start_time
         
         # Weaviate (if available)
-        weaviate_time = 0
         if weaviate_available and weaviate_store:
             start_time = time.time()
             weaviate_store.add_documents(document_chunks)
-            weaviate_time = time.time() - start_time
+            indexing_times["weaviate"] = time.time() - start_time
+            
+        # MongoDB
+        try:
+            start_time = time.time()
+            mongo_store.add_documents(document_chunks)
+            indexing_times["mongo"] = time.time() - start_time
+        except Exception as e:
+            print(f"Error indexing in MongoDB: {str(e)}")
+            
+        # pgvector
+        try:
+            start_time = time.time()
+            pgvector_store.add_documents(document_chunks)
+            indexing_times["pgvector"] = time.time() - start_time
+        except Exception as e:
+            print(f"Error indexing in pgvector: {str(e)}")
+            
+        # Milvus (if available)
+        if milvus_available and milvus_store:
+            try:
+                start_time = time.time()
+                milvus_store.add_documents(document_chunks)
+                indexing_times["milvus"] = time.time() - start_time
+            except Exception as e:
+                print(f"Error indexing in Milvus: {str(e)}")
         
         # Return success with timing metrics
         return jsonify({
@@ -123,12 +181,15 @@ def upload():
             "document": {
                 "filename": file.filename,
                 "chunk_count": len(document_chunks),
-                "indexing_times": {
-                    "faiss": faiss_time,
-                    "chroma": chroma_time,
-                    "weaviate": weaviate_time if weaviate_available else -1
-                },
-                "weaviate_available": weaviate_available
+                "indexing_times": indexing_times,
+                "available_dbs": {
+                    "faiss": True,
+                    "chroma": True,
+                    "weaviate": weaviate_available,
+                    "mongo": indexing_times["mongo"] >= 0,
+                    "pgvector": indexing_times["pgvector"] >= 0,
+                    "milvus": milvus_available and indexing_times["milvus"] >= 0
+                }
             }
         })
     
@@ -140,64 +201,171 @@ def upload():
 @app.route('/api/rag', methods=['POST'])
 def rag_query():
     """
-    Process a RAG query using the selected vector database
+    Process a RAG query using the selected vector database or all databases for comparison
     """
     data = request.json
     query = data.get('query', '')
     db_type = data.get('db_type', 'faiss')
+    compare_all = data.get('compare_all', False)  # New parameter to request comparison of all DBs
     
     if not query:
         return jsonify({"success": False, "message": "No query provided"})
     
-    # Check if Weaviate is requested but not available
-    if db_type == 'weaviate' and not weaviate_available:
-        return jsonify({
-            "success": False, 
-            "message": "Weaviate is not available. Please use FAISS or ChromaDB instead."
-        })
-        
     try:
-        # Select the appropriate vector store based on the type
-        if db_type == 'faiss':
-            query_time, results = faiss_store.query(query)
-            vector_store_name = "FAISS"
-        elif db_type == 'chroma':
-            query_time, results = chroma_store.query(query)
-            vector_store_name = "ChromaDB"
-        elif db_type == 'weaviate' and weaviate_available:
-            query_time, results = weaviate_store.query(query)
-            vector_store_name = "Weaviate"
-        else:
-            return jsonify({"success": False, "message": "Invalid database type"})
+        # If compare_all is True, we'll query all available databases and return all results
+        if compare_all:
+            all_results = {}
+            # Get the list of available databases
+            available_dbs = ["faiss", "chroma"]
+            if weaviate_available:
+                available_dbs.append("weaviate")
+            if mongo_store.initialized:
+                available_dbs.append("mongo")
+            if pgvector_store.initialized:
+                available_dbs.append("pgvector")
+            if milvus_available and milvus_store.initialized:
+                available_dbs.append("milvus")
             
-        # Format results for display
-        formatted_results = format_results(query_time, results)
+            # Query each available database
+            for db in available_dbs:
+                try:
+                    if db == 'faiss':
+                        query_time, results = faiss_store.query(query)
+                        vector_store_name = "FAISS"
+                    elif db == 'chroma':
+                        query_time, results = chroma_store.query(query)
+                        vector_store_name = "ChromaDB"
+                    elif db == 'weaviate':
+                        query_time, results = weaviate_store.query(query)
+                        vector_store_name = "Weaviate"
+                    elif db == 'mongo':
+                        query_time, results = mongo_store.query(query)
+                        vector_store_name = "MongoDB"
+                    elif db == 'pgvector':
+                        query_time, results = pgvector_store.query(query)
+                        vector_store_name = "pgvector"
+                    elif db == 'milvus':
+                        query_time, results = milvus_store.query(query)
+                        vector_store_name = "Milvus"
+                    
+                    # Format results for this database
+                    formatted_results = format_results(query_time, results)
+                    all_results[db] = {
+                        "name": vector_store_name,
+                        "query_time": query_time,
+                        "retrieved_docs": formatted_results["results"]
+                    }
+                except Exception as db_error:
+                    print(f"Error querying {db}: {str(db_error)}")
+                    all_results[db] = {
+                        "name": db,
+                        "error": str(db_error)
+                    }
+            
+            # Use Gemini model to generate a response based on the best results
+            # We'll use the database with most results or lowest query time if tied
+            best_db = None
+            max_results = -1
+            min_time = float('inf')
+            
+            # Determine the fastest database (lowest query time)
+            for db, result in all_results.items():
+                if "query_time" in result and result["query_time"] < min_time and "retrieved_docs" in result and len(result["retrieved_docs"]) > 0:
+                    min_time = result["query_time"]
+                    max_results = len(result["retrieved_docs"])
+                    best_db = db
+            
+            # If no database has results with valid times, fall back to most results
+            if best_db is None:
+                for db, result in all_results.items():
+                    if "retrieved_docs" in result and len(result["retrieved_docs"]) > max_results:
+                        max_results = len(result["retrieved_docs"])
+                        best_db = db
+            
+            # If we have a best DB with results, generate RAG response
+            rag_response = "No results found in any database."
+            if best_db and max_results > 0:
+                if "retrieved_docs" in all_results[best_db]:
+                    # Extract content from documents
+                    docs = [doc["content"] for doc in all_results[best_db]["retrieved_docs"]]
+                    context = "\n\n".join(docs)
+                    
+                    print(f"Generating RAG response using {best_db} with {max_results} documents")
+                    
+                    prompt = f"""
+                    Based on the following information, please answer the query: {query}
+                    
+                    Context information:
+                    {context}
+                    
+                    Please provide a concise and accurate answer based only on the context provided.
+                    If the context doesn't contain relevant information, state that you don't have enough information to answer.
+                    """
+                    
+                    response = model.generate_content(prompt)
+                    rag_response = response.text
+            
+            # Return comparison results
+            return jsonify({
+                "success": True,
+                "query": query,
+                "compare_all": True,
+                "results": all_results,
+                "rag_response": rag_response,
+                "best_db": best_db
+            })
         
-        # Use Gemini model to generate a response based on retrieved context
-        context = "\n\n".join([doc.page_content for doc in results])
-        
-        prompt = f"""
-        Based on the following information, please answer the query: {query}
-        
-        Context information:
-        {context}
-        
-        Please provide a concise and accurate answer based only on the context provided.
-        If the context doesn't contain relevant information, state that you don't have enough information to answer.
-        """
-        
-        response = model.generate_content(prompt)
-        rag_response = response.text
-        
-        # Return the results
-        return jsonify({
-            "success": True,
-            "query": query,
-            "db_type": db_type,
-            "query_time": query_time,
-            "rag_response": rag_response,
-            "retrieved_docs": formatted_results["results"]
-        })
+        # Otherwise, use the single selected database as before
+        else:
+            if db_type == 'faiss':
+                query_time, results = faiss_store.query(query)
+                vector_store_name = "FAISS"
+            elif db_type == 'chroma':
+                query_time, results = chroma_store.query(query)
+                vector_store_name = "ChromaDB"
+            elif db_type == 'weaviate':
+                query_time, results = weaviate_store.query(query)
+                vector_store_name = "Weaviate"
+            elif db_type == 'mongo':
+                query_time, results = mongo_store.query(query)
+                vector_store_name = "MongoDB"
+            elif db_type == 'pgvector':
+                query_time, results = pgvector_store.query(query)
+                vector_store_name = "pgvector"
+            elif db_type == 'milvus':
+                query_time, results = milvus_store.query(query)
+                vector_store_name = "Milvus"
+            else:
+                return jsonify({"success": False, "message": "Invalid database type"})
+                
+            # Format results for display
+            formatted_results = format_results(query_time, results)
+            
+            # Use Gemini model to generate a response based on retrieved context
+            context = "\n\n".join([doc.page_content for doc in results])
+            
+            prompt = f"""
+            Based on the following information, please answer the query: {query}
+            
+            Context information:
+            {context}
+            
+            Please provide a concise and accurate answer based only on the context provided.
+            If the context doesn't contain relevant information, state that you don't have enough information to answer.
+            """
+            
+            response = model.generate_content(prompt)
+            rag_response = response.text
+            
+            # Return the results
+            return jsonify({
+                "success": True,
+                "query": query,
+                "db_type": db_type,
+                "query_time": query_time,
+                "rag_response": rag_response,
+                "retrieved_docs": formatted_results["results"]
+            })
     
     except Exception as e:
         print(f"Error processing RAG query: {str(e)}")
@@ -207,9 +375,11 @@ def rag_query():
 @app.route('/api/available-dbs', methods=['GET'])
 def available_dbs():
     """Return the list of available vector databases"""
-    dbs = ["faiss", "chroma"]
+    dbs = ["faiss", "chroma", "mongo", "pgvector"]
     if weaviate_available:
         dbs.append("weaviate")
+    if milvus_available:
+        dbs.append("milvus")
     
     return jsonify({
         "success": True,

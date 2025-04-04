@@ -3,9 +3,16 @@ import React, { useState, FormEvent, ChangeEvent } from 'react';
 interface ChatInputProps {
   onSendMessage: (message: string) => void;
   isLoading: boolean;
+  placeholder?: string;
+  buttonText?: string;
 }
 
-const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, isLoading }) => {
+const ChatInput: React.FC<ChatInputProps> = ({ 
+  onSendMessage, 
+  isLoading,
+  placeholder = "Type your message...",
+  buttonText = "Send"
+}) => {
   const [message, setMessage] = useState('');
 
   const handleSubmit = (e: FormEvent) => {
@@ -23,7 +30,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, isLoading }) => {
           type="text"
           value={message}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setMessage(e.target.value)}
-          placeholder="Type your message..."
+          placeholder={placeholder}
           disabled={isLoading}
           className="flex-1 p-2 border border-gray-300 rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
@@ -34,7 +41,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, isLoading }) => {
             isLoading || !message.trim() ? 'bg-gray-300' : 'bg-blue-600 text-white'
           }`}
         >
-          {isLoading ? 'Sending...' : 'Send'}
+          {isLoading ? 'Sending...' : buttonText}
         </button>
       </div>
     </form>

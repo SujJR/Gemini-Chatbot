@@ -1,73 +1,68 @@
 import React from 'react';
 import { IndexingTimes } from '../types';
 
+interface QueryTimes {
+  [key: string]: number;
+}
+
 interface DatabasePerformanceProps {
   indexingTimes: IndexingTimes;
-  queryTimes?: Record<string, number>;
+  queryTimes: QueryTimes;
 }
 
 const DatabasePerformance: React.FC<DatabasePerformanceProps> = ({ 
   indexingTimes, 
   queryTimes 
 }) => {
-  // Find fastest indexing database
-  const indexingEntries = Object.entries(indexingTimes);
-  const fastestIndexing = [...indexingEntries].sort((a, b) => a[1] - b[1])[0];
+  const allDatabases = Object.keys(indexingTimes).filter(db => indexingTimes[db as keyof IndexingTimes] >= 0);
   
-  // Find fastest query database (if available)
-  let fastestQuery: [string, number] | null = null;
-  if (queryTimes && Object.keys(queryTimes).length > 0) {
-    const queryEntries = Object.entries(queryTimes);
-    fastestQuery = [...queryEntries].sort((a, b) => a[1] - b[1])[0];
-  }
+  const renderPerformanceData = () => {
+    return (
+      <table className="min-w-full divide-y divide-gray-200">
+        <thead className="bg-gray-50">
+          <tr>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Database
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Indexing Time (s)
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Query Time (s)
+            </th>
+          </tr>
+        </thead>
+        <tbody className="bg-white divide-y divide-gray-200">
+          {allDatabases.map((db) => (
+            <tr key={db}>
+              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                {db.toUpperCase()}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                {indexingTimes[db as keyof IndexingTimes].toFixed(4)}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                {queryTimes[db] 
+                  ? queryTimes[db].toFixed(4) 
+                  : 'N/A'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  };
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h3 className="font-semibold mb-2">Indexing Performance</h3>
-        <div className="space-y-2">
-          {indexingEntries.map(([db, time]) => (
-            <div 
-              key={db}
-              className={`flex items-center justify-between p-2 rounded-md ${
-                db === fastestIndexing[0] ? 'bg-green-50 border-l-4 border-green-500' : 'bg-gray-50'
-              }`}
-            >
-              <div className="flex items-center">
-                {db === fastestIndexing[0] && <span className="text-green-500 mr-1">⚡</span>}
-                <span className={`capitalize ${db === fastestIndexing[0] ? 'font-medium' : ''}`}>{db}</span>
-              </div>
-              <div className={db === fastestIndexing[0] ? 'font-semibold text-green-700' : ''}>
-                {time.toFixed(4)}s
-              </div>
-            </div>
-          ))}
-        </div>
+    <div className="overflow-hidden shadow-md border rounded-lg">
+      <div className="px-4 py-5 sm:px-6 bg-gray-50">
+        <h3 className="text-lg leading-6 font-medium text-gray-900">
+          Database Performance Comparison
+        </h3>
       </div>
-
-      {fastestQuery && (
-        <div>
-          <h3 className="font-semibold mb-2">Query Performance</h3>
-          <div className="space-y-2">
-            {Object.entries(queryTimes || {}).map(([db, time]) => (
-              <div 
-                key={db}
-                className={`flex items-center justify-between p-2 rounded-md ${
-                  db === fastestQuery![0] ? 'bg-blue-50 border-l-4 border-blue-500' : 'bg-gray-50'
-                }`}
-              >
-                <div className="flex items-center">
-                  {db === fastestQuery![0] && <span className="text-blue-500 mr-1">⚡</span>}
-                  <span className={`capitalize ${db === fastestQuery![0] ? 'font-medium' : ''}`}>{db}</span>
-                </div>
-                <div className={db === fastestQuery![0] ? 'font-semibold text-blue-700' : ''}>
-                  {time.toFixed(4)}s
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="overflow-x-auto">
+        {renderPerformanceData()}
+      </div>
     </div>
   );
 };
