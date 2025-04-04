@@ -49,7 +49,7 @@ const DocumentUpload: React.FC<DocumentUploadProps> = ({
 
     try {
       const response = await axios.post<UploadResponse>(
-        'http://localhost:5000/api/upload',
+        'http://localhost:5001/api/upload',
         formData,
         {
           headers: { 'Content-Type': 'multipart/form-data' }

@@ -1,6 +1,9 @@
 export interface Message {
-  text: string;
-  sender: 'user' | 'bot';
+  id?: string;
+  text?: string;
+  content?: string;
+  sender: 'user' | 'bot' | 'system' | 'assistant';
+  timestamp?: string;
 }
 
 export interface DocumentResult {

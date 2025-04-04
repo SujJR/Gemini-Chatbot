@@ -29,7 +29,7 @@ class MongoVectorStore:
             mongo_cluster = os.getenv("MONGO_CLUSTER")
             
             # Construct the connection string
-            self.mongo_url = f"mongodb+srv://{mongo_user}:{mongo_password}@{mongo_cluster}.z8hiz.mongodb.net/?retryWrites=true&w=majority"
+            self.mongo_url = f"mongodb+srv://{mongo_user}:{mongo_password}@{mongo_cluster}/?retryWrites=true&w=majority"
             
             # Connect to MongoDB with proper error handling
             try:
